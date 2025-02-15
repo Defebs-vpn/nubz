@@ -118,55 +118,210 @@ setup_domain() {
     update_dns_record
 }
 
+# Function: Initialize Installation
+init_installation() {
+    echo -e "\n${YELLOW}Initializing Installation...${NC}"
+    
+    # Create installation directory
+    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$BACKUP_DIR"
+    touch "$INSTALL_LOG"
+    
+    # Set timezone
+    timedatectl set-timezone Asia/Jakarta
+    
+    # Update package list
+    echo -e "${YELLOW}Updating system packages...${NC}"
+    apt update -y
+    apt upgrade -y
+    apt dist-upgrade -y
+    
+    # Install jq first for JSON processing
+    echo -e "${YELLOW}Installing jq...${NC}"
+    apt install -y jq || {
+        echo -e "${RED}Failed to install jq. Retrying with alternative method...${NC}"
+        apt-get update
+        apt-get install -y jq
+    }
+    
+    # Verify jq installation
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Failed to install jq. Installing manually...${NC}"
+        wget -O /usr/bin/jq "https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64"
+        chmod +x /usr/bin/jq
+    fi
+    
+    # Install required packages
+    echo -e "${YELLOW}Installing required packages...${NC}"
+    apt install -y \
+        curl \
+        wget \
+        git \
+        zip \
+        unzip \
+        tar \
+        build-essential \
+        cmake \
+        make \
+        gcc \
+        g++ \
+        netfilter-persistent \
+        iptables-persistent \
+        net-tools \
+        bc \
+        vnstat \
+        python \
+        python3 \
+        python-pip \
+        python3-pip \
+        nginx \
+        certbot \
+        python3-certbot-nginx \
+        openssh-server \
+        dropbear \
+        stunnel4 \
+        fail2ban \
+        ufw \
+        needrestart \
+        ca-certificates \
+        openssl \
+        cron \
+        pwgen \
+        nscd \
+        libxml-parser-perl \
+        squid \
+        neofetch \
+        htop \
+        mlocate \
+        dnsutils \
+        libsqlite3-dev \
+        socat \
+        bash-completion \
+        ntpdate \
+        apache2-utils \
+        sysstat \
+        || {
+            echo -e "${RED}Failed to install some packages. Retrying...${NC}"
+            apt-get update
+            apt-get install -y curl wget git zip unzip tar build-essential cmake make gcc g++ \
+            netfilter-persistent iptables-persistent net-tools jq bc vnstat python python3 \
+            python-pip python3-pip nginx certbot python3-certbot-nginx openssh-server dropbear \
+            stunnel4 fail2ban ufw needrestart ca-certificates openssl cron pwgen nscd \
+            libxml-parser-perl squid neofetch htop mlocate dnsutils libsqlite3-dev socat \
+            bash-completion ntpdate apache2-utils sysstat
+        }
+        
+    # Clear package cache
+    apt clean
+    apt autoremove -y
+    
+    echo -e "${GREEN}Initialization completed successfully!${NC}"
+}
+
 # Function: Update DNS Record in Cloudflare
 update_dns_record() {
     echo -e "\n${YELLOW}Updating DNS Record...${NC}"
+    
+    # Verify jq is installed
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}jq is not installed. Installing...${NC}"
+        apt update && apt install -y jq
+        if ! command -v jq &> /dev/null; then
+            echo -e "${RED}Failed to install jq. Using alternative method...${NC}"
+            # Fallback without jq
+            process_without_jq=true
+        fi
+    fi
     
     # Check if DNS record exists
     CHECK_RECORD=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${SUB_DOMAIN}" \
      -H "Authorization: Bearer ${CF_API_TOKEN}" \
      -H "Content-Type: application/json")
     
-    if [[ $(echo "$CHECK_RECORD" | grep -c "\"count\":0") -eq 1 ]]; then
-        # Create new DNS record
-        CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-         -H "Authorization: Bearer ${CF_API_TOKEN}" \
-         -H "Content-Type: application/json" \
-         --data '{
-           "type": "A",
-           "name": "'${SUB_DOMAIN}'",
-           "content": "'${MYIP}'",
-           "ttl": 120,
-           "proxied": false
-         }')
-        
-        if [[ $(echo "$CREATE_RECORD" | grep -c "\"success\":true") -eq 1 ]]; then
-            echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
+    if [ "$process_without_jq" = true ]; then
+        # Process without jq
+        if [[ "$CHECK_RECORD" == *'"count":0'* ]]; then
+            CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+             -H "Authorization: Bearer ${CF_API_TOKEN}" \
+             -H "Content-Type: application/json" \
+             --data '{
+               "type": "A",
+               "name": "'${SUB_DOMAIN}'",
+               "content": "'${MYIP}'",
+               "ttl": 120,
+               "proxied": false
+             }')
+            
+            if [[ "$CREATE_RECORD" == *'"success":true'* ]]; then
+                echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
+            else
+                echo -e "${RED}Failed to create DNS record!${NC}"
+                return 1
+            fi
         else
-            echo -e "${RED}Failed to create DNS record! Error: $(echo "$CREATE_RECORD" | jq -r '.errors[0].message')${NC}"
-            return 1
+            # Extract record ID without jq
+            RECORD_ID=$(echo "$CHECK_RECORD" | grep -o '"id":"[^"]*' | cut -d'"' -f4 | head -n1)
+            
+            UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+             -H "Authorization: Bearer ${CF_API_TOKEN}" \
+             -H "Content-Type: application/json" \
+             --data '{
+               "type": "A",
+               "name": "'${SUB_DOMAIN}'",
+               "content": "'${MYIP}'",
+               "ttl": 120,
+               "proxied": false
+             }')
+            
+            if [[ "$UPDATE_RECORD" == *'"success":true'* ]]; then
+                echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
+            else
+                echo -e "${RED}Failed to update DNS record!${NC}"
+                return 1
+            fi
         fi
     else
-        # Get existing record ID
-        RECORD_ID=$(echo "$CHECK_RECORD" | jq -r '.result[0].id')
-        
-        # Update existing DNS record
-        UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-         -H "Authorization: Bearer ${CF_API_TOKEN}" \
-         -H "Content-Type: application/json" \
-         --data '{
-           "type": "A",
-           "name": "'${SUB_DOMAIN}'",
-           "content": "'${MYIP}'",
-           "ttl": 120,
-           "proxied": false
-         }')
-        
-        if [[ $(echo "$UPDATE_RECORD" | grep -c "\"success\":true") -eq 1 ]]; then
-            echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
+        # Process with jq
+        if [[ $(echo "$CHECK_RECORD" | jq -r '.result | length') -eq 0 ]]; then
+            CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+             -H "Authorization: Bearer ${CF_API_TOKEN}" \
+             -H "Content-Type: application/json" \
+             --data '{
+               "type": "A",
+               "name": "'${SUB_DOMAIN}'",
+               "content": "'${MYIP}'",
+               "ttl": 120,
+               "proxied": false
+             }')
+            
+            if [[ $(echo "$CREATE_RECORD" | jq -r '.success') == "true" ]]; then
+                echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
+            else
+                error_msg=$(echo "$CREATE_RECORD" | jq -r '.errors[0].message')
+                echo -e "${RED}Failed to create DNS record! Error: ${error_msg}${NC}"
+                return 1
+            fi
         else
-            echo -e "${RED}Failed to update DNS record! Error: $(echo "$UPDATE_RECORD" | jq -r '.errors[0].message')${NC}"
-            return 1
+            RECORD_ID=$(echo "$CHECK_RECORD" | jq -r '.result[0].id')
+            
+            UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+             -H "Authorization: Bearer ${CF_API_TOKEN}" \
+             -H "Content-Type: application/json" \
+             --data '{
+               "type": "A",
+               "name": "'${SUB_DOMAIN}'",
+               "content": "'${MYIP}'",
+               "ttl": 120,
+               "proxied": false
+             }')
+            
+            if [[ $(echo "$UPDATE_RECORD" | jq -r '.success') == "true" ]]; then
+                echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
+            else
+                error_msg=$(echo "$UPDATE_RECORD" | jq -r '.errors[0].message')
+                echo -e "${RED}Failed to update DNS record! Error: ${error_msg}${NC}"
+                return 1
+            fi
         fi
     fi
     
@@ -181,46 +336,6 @@ update_dns_record() {
             sleep 30
         fi
     done
-}
-
-# Function: Initialize Installation
-init_installation() {
-    # Create installation directory
-    mkdir -p "$INSTALL_DIR"
-    mkdir -p "$BACKUP_DIR"
-    touch "$INSTALL_LOG"
-    
-    # Set timezone
-    timedatectl set-timezone Asia/Jakarta
-    
-    # Update package list
-    apt update -y
-    apt upgrade -y
-    apt dist-upgrade -y
-    
-    # Install required packages
-    apt install -y \
-        curl wget git zip unzip tar \
-        build-essential cmake make gcc g++ \
-        netfilter-persistent iptables-persistent \
-        net-tools jq bc vnstat \
-        python python3 python-pip python3-pip \
-        nginx certbot python3-certbot-nginx \
-        openssh-server dropbear stunnel4 \
-        fail2ban ufw needrestart \
-        ca-certificates openssl \
-        cron pwgen nscd \
-        libxml-parser-perl squid \
-        neofetch htop vnstat \
-        mlocate dnsutils \
-        libsqlite3-dev \
-        socat cron bash-completion \
-        ntpdate apache2-utils \
-        sysstat
-        
-    # Clear package cache
-    apt clean
-    apt autoremove -y
 }
 
 # Function: Setup SSH
@@ -703,6 +818,9 @@ main_install() {
     
     # Initialize Installation
     init_installation
+
+    # Update dns recording
+    update_dns_record
     
     # Setup Services
     setup_ssh
