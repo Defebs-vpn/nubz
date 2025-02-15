@@ -200,17 +200,176 @@ speed_test() {
     fi
 }
 
-# System information with improved formatting
+# System information with fixed syntax
 system_info() {
     echo -e "\n${YELLOW}=== SYSTEM INFORMATION ===${NC}"
     echo -e "OS\t\t: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
     echo -e "Kernel\t\t: $(uname -r)"
     echo -e "CPU\t\t: $(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)"
     echo -e "Memory\t\t: $(free -h | grep Mem | awk '{print $2}') total, $(free -h | grep Mem | awk '{print $4}') free"
-    echo -e "Disk Usage\t: $(df -h / | awk 'NR==2 {print $3"/"$2" ("$5" used)"}'"
+    echo -e "Disk Usage\t: $(df -h / | awk 'NR==2 {print $3"/"$2" ("$5" used)"}')"
     echo -e "Uptime\t\t: $(uptime -p)"
     echo -e "Load Average\t: $(uptime | awk -F'load average:' '{print $2}' | xargs)"
     echo -e "IP Address\t: $(curl -s ifconfig.me)"
+}
+
+# Bandwidth monitor function
+bandwidth_monitor() {
+    echo -e "\n${YELLOW}=== BANDWIDTH USAGE ===${NC}"
+    if command -v vnstat &>/dev/null; then
+        vnstat
+    else
+        echo -e "${YELLOW}Installing vnstat...${NC}"
+        apt install -y vnstat
+        systemctl enable vnstat
+        systemctl start vnstat
+        sleep 2
+        vnstat
+    fi
+}
+
+# Change port function
+change_port() {
+    echo -e "\n${YELLOW}=== CHANGE PORT ===${NC}"
+    echo -e "1. SSH Port"
+    echo -e "2. Dropbear Port"
+    echo -e "3. SSL Port"
+    echo -e "4. WebSocket Port"
+    echo -e "0. Back to main menu"
+    
+    read -p "Select service: " choice
+    case $choice in
+        1) read -p "Enter new SSH port: " port
+           if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               sed -i "s/^Port .*/Port $port/" /etc/ssh/sshd_config
+               systemctl restart ssh
+               echo -e "${GREEN}SSH port changed to $port${NC}"
+           else
+               echo -e "${RED}Invalid port number${NC}"
+           fi
+           ;;
+        2) read -p "Enter new Dropbear port: " port
+           if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$port/" /etc/default/dropbear
+               systemctl restart dropbear
+               echo -e "${GREEN}Dropbear port changed to $port${NC}"
+           else
+               echo -e "${RED}Invalid port number${NC}"
+           fi
+           ;;
+        3) read -p "Enter new SSL port: " port
+           if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               sed -i "s/^accept = .*/accept = $port/" /etc/stunnel/stunnel.conf
+               systemctl restart stunnel4
+               echo -e "${GREEN}SSL port changed to $port${NC}"
+           else
+               echo -e "${RED}Invalid port number${NC}"
+           fi
+           ;;
+        4) read -p "Enter new WebSocket port: " port
+           if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               find /usr/local/bin/ -name 'ws-*' -type f -exec sed -i "s/^LISTENING_PORT=.*/LISTENING_PORT=$port/" {} \;
+               systemctl restart ws-dropbear
+               echo -e "${GREEN}WebSocket port changed to $port${NC}"
+           else
+               echo -e "${RED}Invalid port number${NC}"
+           fi
+           ;;
+        0) return ;;
+        *) echo -e "${RED}Invalid option${NC}" ;;
+    esac
+}
+
+# Backup configuration function
+backup_config() {
+    backup_dir="/root/vpn_backup"
+    backup_file="vpn_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    
+    mkdir -p "$backup_dir"
+    
+    echo -e "\n${YELLOW}Creating backup...${NC}"
+    tar -czf "$backup_dir/$backup_file" \
+        /etc/ssh/sshd_config \
+        /etc/default/dropbear \
+        /etc/stunnel/stunnel.conf \
+        /usr/local/bin/ws-* \
+        2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Backup created: $backup_dir/$backup_file${NC}"
+        echo -e "Backup size: $(du -h "$backup_dir/$backup_file" | cut -f1)"
+    else
+        echo -e "${RED}Backup failed!${NC}"
+    fi
+}
+
+# Restore configuration function
+restore_config() {
+    backup_dir="/root/vpn_backup"
+    
+    if [ ! -d "$backup_dir" ]; then
+        echo -e "${RED}No backup directory found!${NC}"
+        return 1
+    fi
+    
+    echo -e "\n${YELLOW}Available backups:${NC}"
+    backups=($(ls -1 "$backup_dir"/*.tar.gz 2>/dev/null))
+    
+    if [ ${#backups[@]} -eq 0 ]; then
+        echo -e "${RED}No backup files found!${NC}"
+        return 1
+    fi
+    
+    for i in "${!backups[@]}"; do
+        echo "$((i+1)). $(basename "${backups[$i]}") ($(du -h "${backups[$i]}" | cut -f1))"
+    done
+    
+    read -p "Enter backup number to restore [1-${#backups[@]}]: " choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#backups[@]} ]; then
+        backup_file="${backups[$((choice-1))]}"
+        
+        echo -e "${YELLOW}Restoring backup...${NC}"
+        tar -xzf "$backup_file" -C / 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}Configuration restored successfully!${NC}"
+            read -p "Do you want to restart services? [Y/n] " restart
+            if [[ "$restart" =~ ^[Yy]$ ]] || [ -z "$restart" ]; then
+                restart_services
+            fi
+        else
+            echo -e "${RED}Restore failed!${NC}"
+        fi
+    else
+        echo -e "${RED}Invalid selection!${NC}"
+    fi
+}
+
+# Update script function
+update_script() {
+    echo -e "\n${YELLOW}Checking for updates...${NC}"
+    
+    # Backup current script
+    cp "$0" "$0.bak"
+    
+    if wget -q -O "$0.tmp" "https://raw.githubusercontent.com/Defebs-vpn/nubz/main/menu.sh"; then
+        if diff "$0" "$0.tmp" >/dev/null; then
+            echo -e "${GREEN}Script is already up to date!${NC}"
+            rm "$0.tmp"
+        else
+            mv "$0.tmp" "$0"
+            chmod +x "$0"
+            echo -e "${GREEN}Script updated successfully!${NC}"
+            echo -e "${YELLOW}Restarting script...${NC}"
+            exec "$0"
+        fi
+    else
+        echo -e "${RED}Update failed!${NC}"
+        if [ -f "$0.tmp" ]; then
+            rm "$0.tmp"
+        fi
+    fi
 }
 
 # Main script execution
