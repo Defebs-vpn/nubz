@@ -41,7 +41,7 @@ ARCH=$(uname -m)
 KERNEL=$(uname -r)
 
 # Installation Path
-INSTALL_DIR="/usr/local/vpnserver"
+INSTALL_DIR="/usr/local/nubz"
 INSTALL_LOG="/var/log/vpn_setup.log"
 BACKUP_DIR="/root/vpn_backup"
 
@@ -608,6 +608,7 @@ EOF
 }
 
 # Update create_info function to include domain information
+# Function: Create Installation Info
 create_info() {
     cat > $INSTALL_DIR/installation.info << EOF
 ====================================================================
@@ -655,6 +656,12 @@ $(systemctl is-active badvpn) : BadVPN-UDP
 $(systemctl is-active fail2ban) : Fail2Ban
 $(systemctl is-active ufw) : UFW Firewall
 
+» Domain Configuration
+--------------------
+Domain     : $DOMAIN
+Subdomain  : $SUB_DOMAIN
+SSL Status : $(if [[ -f "/etc/letsencrypt/live/${SUB_DOMAIN}/fullchain.pem" ]]; then echo "Active"; else echo "Not Configured"; fi)
+
 » Management Commands
 -------------------
 menu     : Show VPN management menu
@@ -668,18 +675,9 @@ EOF
     # Copy to root directory for easy access
     cp $INSTALL_DIR/installation.info /root/vpn-info.txt
 }
-    
-    # Add domain information
-    cat >> $INSTALL_DIR/installation.info << EOF
 
-» Domain Configuration
---------------------
-Domain     : $DOMAIN
-Subdomain  : $SUB_DOMAIN
-SSL Status : $(if [[ -f "/etc/letsencrypt/live/${SUB_DOMAIN}/fullchain.pem" ]]; then echo "Active"; else echo "Not Configured"; fi)
-
-EOF
-}
+# Start Installation
+main_install
 
 # Update main_install function
 main_install() {
