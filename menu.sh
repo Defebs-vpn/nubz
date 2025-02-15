@@ -1,7 +1,10 @@
 #!/bin/bash
+# ==================================================================
 # VPN Manager Menu Script
-# Created by Defebs-vpn
-# Created at: 2025-02-15 06:25:09 UTC
+# Created by: Defebs-vpn
+# Created at: 2025-02-15 08:01:44 UTC
+# Version: 2.3.4
+# ==================================================================
 
 # Colors
 RED='\033[0;31m'
@@ -10,47 +13,137 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Function to check if user exists
-user_exists() {
-    id "$1" &>/dev/null
-    return $?
+# Function to check system requirements
+check_requirements() {
+    echo -e "${YELLOW}Checking system requirements...${NC}"
+    
+    # List of required packages
+    local required_packages=(
+        "curl"
+        "wget"
+        "vnstat"
+        "speedtest-cli"
+        "jq"
+        "netfilter-persistent"
+        "iptables-persistent"
+    )
+    
+    # Check and install missing packages
+    local missing_packages=()
+    for package in "${required_packages[@]}"; do
+        if ! dpkg -l | grep -q "^ii  $package"; then
+            missing_packages+=("$package")
+        fi
+    done
+    
+    # Install missing packages if any
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        echo -e "${YELLOW}Installing missing packages: ${missing_packages[*]}${NC}"
+        apt update &>/dev/null
+        
+        for package in "${missing_packages[@]}"; do
+            echo -ne "${CYAN}Installing $package...${NC}"
+            apt install -y "$package" &>/dev/null
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}OK${NC}"
+            else
+                echo -e "${RED}Failed${NC}"
+            fi
+        done
+    fi
+    
+    # Check system services
+    local required_services=(
+        "ssh"
+        "dropbear"
+        "stunnel4"
+        "ws-dropbear"
+        "badvpn"
+    )
+    
+    echo -e "\n${YELLOW}Checking system services...${NC}"
+    for service in "${required_services[@]}"; do
+        if systemctl is-active "$service" &>/dev/null; then
+            echo -e "$service: ${GREEN}Active${NC}"
+        else
+            echo -e "$service: ${RED}Inactive${NC}"
+        fi
+    done
+    
+    # Check system resources
+    echo -e "\n${YELLOW}Checking system resources...${NC}"
+    local memory_usage=$(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2}')
+    local disk_usage=$(df -h / | awk 'NR==2{print $5}')
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}')
+    
+    echo -e "Memory Usage : $memory_usage"
+    echo -e "Disk Usage  : $disk_usage"
+    echo -e "CPU Usage   : $cpu_usage%"
+}
+
+# Function to check root access
+check_root() {
+    if [ "$(id -u)" != "0" ]; then
+        echo -e "${RED}Error: This script must be run as root${NC}"
+        exit 1
+    fi
 }
 
 # Function to show current time
 show_current_time() {
-    echo -e "Current Date and Time (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
-    echo -e "Current User's Login: $(whoami)"
+    echo -e "${CYAN}Date & Time : $(date '+%Y-%m-%d %H:%M:%S')"
+    echo -e "Login as   : $(whoami)${NC}"
 }
 
-# Update show_banner function
+# Function to show banner
 show_banner() {
     clear
-    echo -e "${BLUE}=================================================${NC}"
-    echo -e "${GREEN}               VPN MANAGER MENU                   ${NC}"
-    echo -e "${GREEN}            Created by Defebs-vpn                ${NC}"
-    echo -e "${BLUE}=================================================${NC}"
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e "${PURPLE}    ____  _____ _____ _____ ____  ____      __     ______  _   _ ${NC}"
+    echo -e "${PURPLE}   |  _ \|  ___|  ___| ____|  _ \/ ___|    \ \   / /  _ \| \ | |${NC}"
+    echo -e "${PURPLE}   | | | | |_  | |_  |  _| | |_) \___ \     \ \ / /| |_) |  \| |${NC}"
+    echo -e "${PURPLE}   | |_| |  _| |  _| | |___|  _ < ___) |     \ V / |  __/| |\  |${NC}"
+    echo -e "${PURPLE}   |____/|_|   |_|   |_____|_| \_\____/       \_/  |_|   |_| \_|${NC}"
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e "${GREEN}                   PREMIUM VPN MANAGER                          ${NC}"
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e "${YELLOW}Server Information${NC}"
+    echo -e "${CYAN}IP Address : $(curl -s ifconfig.me)"
+    echo -e "Hostname   : $(hostname)${NC}"
     show_current_time
-    echo -e "${BLUE}=================================================${NC}"
+    echo -e "${BLUE}================================================================${NC}"
 }
 
-# Main menu
+# Function to show menu
 show_menu() {
-    echo -e "\n${YELLOW}=== MAIN MENU ===${NC}"
-    echo -e "1.  Create User Account"
-    echo -e "2.  Delete User Account"
-    echo -e "3.  View User List"
-    echo -e "4.  Monitor User Login"
-    echo -e "5.  Check Service Status"
-    echo -e "6.  Restart All Services"
-    echo -e "7.  Speed Test"
-    echo -e "8.  System Information"
-    echo -e "9.  Bandwidth Monitor"
-    echo -e "10. Change Port"
-    echo -e "11. Backup Configuration"
-    echo -e "12. Restore Configuration"
-    echo -e "13. Update Script"
-    echo -e "0.  Exit"
-    echo -e "${BLUE}=================================================${NC}"
+    echo -e "\n${YELLOW}Main Menu${NC}"
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e "${YELLOW}User Management${NC}"
+    echo -e " ${GREEN}[1]${NC} • Create User Account"
+    echo -e " ${GREEN}[2]${NC} • Delete User Account"
+    echo -e " ${GREEN}[3]${NC} • View User List"
+    echo -e " ${GREEN}[4]${NC} • Monitor User Login"
+    echo -e "${BLUE}----------------------------------------------------------------${NC}"
+    echo -e "${YELLOW}Service Management${NC}"
+    echo -e " ${GREEN}[5]${NC} • Check Service Status"
+    echo -e " ${GREEN}[6]${NC} • Restart All Services"
+    echo -e " ${GREEN}[7]${NC} • Fix Inactive Services"
+    echo -e " ${GREEN}[8]${NC} • Change Port"
+    echo -e "${BLUE}----------------------------------------------------------------${NC}"
+    echo -e "${YELLOW}System Tools${NC}"
+    echo -e " ${GREEN}[9]${NC} • Speed Test"
+    echo -e " ${GREEN}[10]${NC} • System Information"
+    echo -e " ${GREEN}[11]${NC} • Bandwidth Monitor"
+    echo -e "${BLUE}----------------------------------------------------------------${NC}"
+    echo -e "${YELLOW}Backup & Update${NC}"
+    echo -e " ${GREEN}[12]${NC} • Backup Configuration"
+    echo -e " ${GREEN}[13]${NC} • Restore Configuration"
+    echo -e " ${GREEN}[14]${NC} • Update Script"
+    echo -e " ${RED}[0]${NC} • Exit"
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e ""
+    read -p "Select menu [0-14]: " choice
+    echo -e ""
 }
 
 # Create user account
@@ -530,10 +623,12 @@ echo -e "\nPress Enter to continue..."
 read
 
 # Main script execution
-show_banner
+check_root
+check_requirements
+
 while true; do
+    show_banner
     show_menu
-    read -p "Enter your choice [0-13]: " choice
     
     case $choice in
         1)  create_user ;;
@@ -542,19 +637,26 @@ while true; do
         4)  monitor_login ;;
         5)  check_services ;;
         6)  restart_services ;;
-        7)  speed_test ;;
-        8)  system_info ;;
-        9)  bandwidth_monitor ;;
-        10) change_port ;;
-        11) backup_config ;;
-        12) restore_config ;;
-        13) update_script ;;
-        14) fix_inactive_services ;;
-        0)  echo -e "${GREEN}Thank you for using VPN Manager!${NC}"
-            exit 0 ;;
-        *)  echo -e "${RED}Invalid option${NC}" ;;
+        7)  fix_inactive_services ;;
+        8)  change_port ;;
+        9)  speed_test ;;
+        10) system_info ;;
+        11) bandwidth_monitor ;;
+        12) backup_config ;;
+        13) restore_config ;;
+        14) update_script ;;
+        0)  clear
+            echo -e "${BLUE}================================================================${NC}"
+            echo -e "${GREEN}                Thank you for using VPN Manager!               ${NC}"
+            echo -e "${BLUE}================================================================${NC}"
+            echo -e "${YELLOW}                        Exiting...                            ${NC}"
+            sleep 2
+            clear
+            exit 0 
+            ;;
+        *)  echo -e "${RED}Error: Invalid option${NC}" ;;
     esac
     
-    echo -e "\nPress Enter to continue..."
+    echo -e "\nPress Enter to return to main menu..."
     read
 done
