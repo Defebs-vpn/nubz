@@ -78,46 +78,6 @@ CF_API_TOKEN="EGVs2f1gfy7AVGE-3pXunVxhWhSyQWIkdfztY_pV"
 CF_EMAIL="dedefebriansyah402@gmail.com"
 DOMAIN="defebs-vpn.my.id"
 
-# Function: Configure Domain and DNS
-setup_domain() {
-    clear
-    echo -e "${BLUE}================================================================${NC}"
-    echo -e "${YELLOW}                  DOMAIN CONFIGURATION SETUP${NC}"
-    echo -e "${BLUE}================================================================${NC}"
-    
-    # Get Domain Information
-    echo -ne "\n${CYAN}Enter your domain name (e.g., example.com): ${NC}"
-    read domain_name
-    
-    echo -ne "${CYAN}Enter subdomain prefix (e.g., vpn for vpn.example.com): ${NC}"
-    read sub_prefix
-    
-    echo -ne "${CYAN}Enter Cloudflare Zone ID: ${NC}"
-    read zone_id
-    
-    echo -ne "${CYAN}Enter Cloudflare API Token: ${NC}"
-    read api_token
-    
-    echo -ne "${CYAN}Enter Cloudflare Email: ${NC}"
-    read cf_email
-    
-    # Validate Input
-    if [[ -z "$domain_name" || -z "$sub_prefix" || -z "$zone_id" || -z "$api_token" || -z "$cf_email" ]]; then
-        echo -e "${RED}Error: All fields are required!${NC}"
-        return 1
-    fi
-    
-    # Set Global Variables
-    DOMAIN="$domain_name"
-    SUB_DOMAIN="${sub_prefix}"
-    CF_ZONE_ID="$zone_id"
-    CF_API_TOKEN="$api_token"
-    CF_EMAIL="$cf_email"
-    
-    # Update DNS Record
-    update_dns_record
-}
-
 # Function: Initialize Installation
 init_installation() {
     echo -e "\n${YELLOW}Initializing Installation...${NC}"
@@ -218,91 +178,68 @@ init_installation() {
     echo -e "${GREEN}Initialization completed successfully!${NC}"
 }
 
-# Function: Update DNS Record in Cloudflare
-update_dns_record() {
-    echo -e "\n${YELLOW}Updating DNS Record...${NC}"
+# Function: Configure Domain and DNS
+setup_domain() {
+    clear
+    echo -e "${BLUE}================================================================${NC}"
+    echo -e "${YELLOW}                  DOMAIN CONFIGURATION SETUP${NC}"
+    echo -e "${BLUE}================================================================${NC}"
     
-    # Verify jq is installed
-    if ! command -v jq &> /dev/null; then
-        echo -e "${RED}jq is not installed. Installing...${NC}"
-        apt update && apt install -y jq
-        if ! command -v jq &> /dev/null; then
-            echo -e "${RED}Failed to install jq. Using alternative method...${NC}"
-            # Fallback without jq
-            process_without_jq=true
-        fi
+    # Get Domain Information
+    echo -ne "\n${CYAN}Enter your domain name (e.g., example.com): ${NC}"
+    read domain_name
+    
+    echo -ne "${CYAN}Enter subdomain prefix (e.g., vpn for vpn.example.com): ${NC}"
+    read sub_prefix
+    
+    echo -ne "${CYAN}Enter Cloudflare Zone ID: ${NC}"
+    read zone_id
+    
+    echo -ne "${CYAN}Enter Cloudflare API Token: ${NC}"
+    read api_token
+    
+    echo -ne "${CYAN}Enter Cloudflare Email: ${NC}"
+    read cf_email
+    
+    # Validate Input
+    if [[ -z "$domain_name" || -z "$sub_prefix" || -z "$zone_id" || -z "$api_token" || -z "$cf_email" ]]; then
+        echo -e "${RED}Error: All fields are required!${NC}"
+        return 1
     fi
     
-    # Check if DNS record exists
-    CHECK_RECORD=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${SUB_DOMAIN}" \
+    # Set Global Variables
+    DOMAIN="$domain_name"
+    SUB_DOMAIN="${sub_prefix}"
+    CF_ZONE_ID="$zone_id"
+    CF_API_TOKEN="$api_token"
+    CF_EMAIL="$cf_email"
+
+    # Update DNS Record
+    update_dns_record
+}
+
+# Function: Update DNS Record in Cloudflare
+# Update the DNS record function to handle existing records better:
+update_dns_record() {
+    echo -e "\n${YELLOW}Checking DNS Records...${NC}"
+    
+    # First, list all DNS records to find existing ones
+    LIST_RECORDS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
      -H "Authorization: Bearer ${CF_API_TOKEN}" \
      -H "Content-Type: application/json")
+
+    # Check if the subdomain already exists
+    EXISTING_RECORD=$(echo "$LIST_RECORDS" | jq -r '.result[] | select(.name=="'"${SUB_DOMAIN}"'")')
     
-    if [ "$process_without_jq" = true ]; then
-        # Process without jq
-        if [[ "$CHECK_RECORD" == *'"count":0'* ]]; then
-            CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-             -H "Content-Type: application/json" \
-             --data '{
-               "type": "A",
-               "name": "'${SUB_DOMAIN}'",
-               "content": "'${MYIP}'",
-               "ttl": 120,
-               "proxied": false
-             }')
-            
-            if [[ "$CREATE_RECORD" == *'"success":true'* ]]; then
-                echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
-            else
-                echo -e "${RED}Failed to create DNS record!${NC}"
-                return 1
-            fi
+    if [[ ! -z "$EXISTING_RECORD" ]]; then
+        echo -e "${YELLOW}Found existing DNS record for ${SUB_DOMAIN}${NC}"
+        RECORD_ID=$(echo "$EXISTING_RECORD" | jq -r '.id')
+        CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.content')
+        
+        if [[ "$CURRENT_IP" == "$MYIP" ]]; then
+            echo -e "${GREEN}DNS record already points to current IP ($MYIP)${NC}"
         else
-            # Extract record ID without jq
-            RECORD_ID=$(echo "$CHECK_RECORD" | grep -o '"id":"[^"]*' | cut -d'"' -f4 | head -n1)
-            
-            UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-             -H "Content-Type: application/json" \
-             --data '{
-               "type": "A",
-               "name": "'${SUB_DOMAIN}'",
-               "content": "'${MYIP}'",
-               "ttl": 120,
-               "proxied": false
-             }')
-            
-            if [[ "$UPDATE_RECORD" == *'"success":true'* ]]; then
-                echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
-            else
-                echo -e "${RED}Failed to update DNS record!${NC}"
-                return 1
-            fi
-        fi
-    else
-        # Process with jq
-        if [[ $(echo "$CHECK_RECORD" | jq -r '.result | length') -eq 0 ]]; then
-            CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-             -H "Content-Type: application/json" \
-             --data '{
-               "type": "A",
-               "name": "'${SUB_DOMAIN}'",
-               "content": "'${MYIP}'",
-               "ttl": 120,
-               "proxied": false
-             }')
-            
-            if [[ $(echo "$CREATE_RECORD" | jq -r '.success') == "true" ]]; then
-                echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
-            else
-                error_msg=$(echo "$CREATE_RECORD" | jq -r '.errors[0].message')
-                echo -e "${RED}Failed to create DNS record! Error: ${error_msg}${NC}"
-                return 1
-            fi
-        else
-            RECORD_ID=$(echo "$CHECK_RECORD" | jq -r '.result[0].id')
+            echo -e "${YELLOW}Updating DNS record from $CURRENT_IP to $MYIP${NC}"
             
             UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
              -H "Authorization: Bearer ${CF_API_TOKEN}" \
@@ -316,24 +253,57 @@ update_dns_record() {
              }')
             
             if [[ $(echo "$UPDATE_RECORD" | jq -r '.success') == "true" ]]; then
-                echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
+                echo -e "${GREEN}Successfully updated DNS record to new IP${NC}"
             else
                 error_msg=$(echo "$UPDATE_RECORD" | jq -r '.errors[0].message')
                 echo -e "${RED}Failed to update DNS record! Error: ${error_msg}${NC}"
                 return 1
             fi
         fi
+    else
+        echo -e "${YELLOW}Creating new DNS record for ${SUB_DOMAIN}${NC}"
+        
+        CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+         -H "Authorization: Bearer ${CF_API_TOKEN}" \
+         -H "Content-Type: application/json" \
+         --data '{
+           "type": "A",
+           "name": "'${SUB_DOMAIN}'",
+           "content": "'${MYIP}'",
+           "ttl": 120,
+           "proxied": false
+         }')
+        
+        if [[ $(echo "$CREATE_RECORD" | jq -r '.success') == "true" ]]; then
+            echo -e "${GREEN}Successfully created new DNS record${NC}"
+        else
+            error_msg=$(echo "$CREATE_RECORD" | jq -r '.errors[0].message')
+            echo -e "${RED}Failed to create DNS record! Error: ${error_msg}${NC}"
+            return 1
+        fi
     fi
     
     # Verify DNS propagation
-    echo -e "\n${YELLOW}Waiting for DNS propagation...${NC}"
-    while true; do
+    echo -e "\n${YELLOW}Verifying DNS propagation...${NC}"
+    local max_attempts=10
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo -e "${YELLOW}Attempt $attempt of $max_attempts${NC}"
+        
         if nslookup "$SUB_DOMAIN" | grep -q "$MYIP"; then
             echo -e "${GREEN}DNS has been propagated successfully!${NC}"
-            break
+            echo -e "${GREEN}DNS record for ${SUB_DOMAIN} points to ${MYIP}${NC}"
+            return 0
         else
+            if [ $attempt -eq $max_attempts ]; then
+                echo -e "${YELLOW}DNS propagation taking longer than expected...${NC}"
+                echo -e "${YELLOW}Continuing with installation. DNS may take up to 24 hours to fully propagate.${NC}"
+                return 0
+            fi
             echo -e "${YELLOW}DNS is still propagating... waiting 30 seconds${NC}"
             sleep 30
+            ((attempt++))
         fi
     done
 }
@@ -818,9 +788,6 @@ main_install() {
     
     # Initialize Installation
     init_installation
-
-    # Update dns recording
-    update_dns_record
     
     # Setup Services
     setup_ssh
