@@ -16,14 +16,20 @@ user_exists() {
     return $?
 }
 
-# Show banner
+# Function to show current time
+show_current_time() {
+    echo -e "Current Date and Time (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+    echo -e "Current User's Login: $(whoami)"
+}
+
+# Update show_banner function
 show_banner() {
     clear
     echo -e "${BLUE}=================================================${NC}"
     echo -e "${GREEN}               VPN MANAGER MENU                   ${NC}"
     echo -e "${GREEN}            Created by Defebs-vpn                ${NC}"
     echo -e "${BLUE}=================================================${NC}"
-    echo -e "Current Time (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+    show_current_time
     echo -e "${BLUE}=================================================${NC}"
 }
 
@@ -372,6 +378,160 @@ update_script() {
     fi
 }
 
+# Function to fix inactive services
+fix_inactive_services() {
+    echo -e "\n${YELLOW}=== FIXING INACTIVE SERVICES ===${NC}"
+    
+    # Fix stunnel4
+    if [ "$(systemctl is-active stunnel4)" != "active" ]; then
+        echo -e "\n${YELLOW}Fixing stunnel4...${NC}"
+        # Check configuration
+        if [ ! -f "/etc/stunnel/stunnel.conf" ]; then
+            echo -e "${RED}stunnel4 configuration missing. Creating default config...${NC}"
+            cat > /etc/stunnel/stunnel.conf << EOF
+pid = /var/run/stunnel4.pid
+cert = /etc/stunnel/stunnel.pem
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+
+[dropbear]
+accept = 443
+connect = 127.0.0.1:143
+
+[openssh]
+accept = 777
+connect = 127.0.0.1:22
+EOF
+        fi
+        
+        # Check certificate
+        if [ ! -f "/etc/stunnel/stunnel.pem" ]; then
+            echo -e "${YELLOW}Generating self-signed certificate...${NC}"
+            openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+                -subj "/C=ID/ST=Jakarta/L=Jakarta/O=VPN/CN=Defebs-vpn" \
+                -keyout /etc/stunnel/stunnel.pem \
+                -out /etc/stunnel/stunnel.pem
+            chmod 600 /etc/stunnel/stunnel.pem
+        fi
+        
+        systemctl enable stunnel4
+        systemctl restart stunnel4
+    fi
+
+    # Fix ws-dropbear
+    if [ "$(systemctl is-active ws-dropbear)" != "active" ]; then
+        echo -e "\n${YELLOW}Fixing ws-dropbear...${NC}"
+        # Check if binary exists
+        if [ ! -f "/usr/local/bin/ws-dropbear" ]; then
+            echo -e "${YELLOW}Downloading ws-dropbear...${NC}"
+            wget -O /usr/local/bin/ws-dropbear "https://raw.githubusercontent.com/Defebs-vpn/nubz/main/files/ws-dropbear"
+            chmod +x /usr/local/bin/ws-dropbear
+        fi
+        
+        # Create service file if missing
+        if [ ! -f "/etc/systemd/system/ws-dropbear.service" ]; then
+            cat > /etc/systemd/system/ws-dropbear.service << EOF
+[Unit]
+Description=Websocket-Dropbear By Defebs-vpn
+Documentation=https://github.com/Defebs-vpn/nubz
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+ExecStart=/usr/local/bin/ws-dropbear -f /usr/local/bin/ws-dropbear 80
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
+        
+        systemctl daemon-reload
+        systemctl enable ws-dropbear
+        systemctl restart ws-dropbear
+    fi
+
+    # Fix badvpn
+    if [ "$(systemctl is-active badvpn)" != "active" ]; then
+        echo -e "\n${YELLOW}Fixing badvpn...${NC}"
+        # Check if binary exists
+        if [ ! -f "/usr/bin/badvpn-udpgw" ]; then
+            echo -e "${YELLOW}Downloading badvpn...${NC}"
+            wget -O /usr/bin/badvpn-udpgw "https://raw.githubusercontent.com/Defebs-vpn/nubz/main/files/badvpn-udpgw64"
+            chmod +x /usr/bin/badvpn-udpgw
+        fi
+        
+        # Create service file if missing
+        if [ ! -f "/etc/systemd/system/badvpn.service" ]; then
+            cat > /etc/systemd/system/badvpn.service << EOF
+[Unit]
+Description=BadVPN UDP Gateway By Defebs-vpn
+Documentation=https://github.com/Defebs-vpn/nubz
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/usr/bin/badvpn-udpgw --listen-addr 127.0.0.1:7300 --max-clients 1000 --max-connections-for-client 10
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
+        
+        systemctl daemon-reload
+        systemctl enable badvpn
+        systemctl restart badvpn
+    fi
+
+    # Verify all services after fixes
+    echo -e "\n${YELLOW}Verifying services status...${NC}"
+    services=("ssh" "dropbear" "stunnel4" "ws-dropbear" "badvpn")
+    
+    printf "%-20s %-15s %-20s\n" "Service" "Status" "Port"
+    echo -e "------------------------------------------------------------"
+    
+    for service in "${services[@]}"; do
+        status=$(systemctl is-active "$service")
+        port=""
+        
+        case $service in
+            "ssh") port="22" ;;
+            "dropbear") port="143" ;;
+            "stunnel4") port="443" ;;
+            "ws-dropbear") port="80" ;;
+            "badvpn") port="7300" ;;
+        esac
+        
+        if [ "$status" == "active" ]; then
+            printf "%-20s ${GREEN}%-15s${NC} %-20s\n" "$service" "ACTIVE" "$port"
+        else
+            printf "%-20s ${RED}%-15s${NC} %-20s\n" "$service" "INACTIVE" "$port"
+        fi
+    done
+}
+
+# Call the fix function
+fix_inactive_services
+
+echo -e "\n${YELLOW}Service recovery completed. Please check the status above.${NC}"
+echo -e "${BLUE}If any services are still inactive, please check the logs using:${NC}"
+echo -e "journalctl -u service-name"
+echo -e "\nPress Enter to continue..."
+read
+
 # Main script execution
 show_banner
 while true; do
@@ -392,6 +552,7 @@ while true; do
         11) backup_config ;;
         12) restore_config ;;
         13) update_script ;;
+        14) fix_inactive_services ;;
         0)  echo -e "${GREEN}Thank you for using VPN Manager!${NC}"
             exit 0 ;;
         *)  echo -e "${RED}Invalid option${NC}" ;;
