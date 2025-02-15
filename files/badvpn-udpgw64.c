@@ -1,0 +1,373 @@
+/**
+ * BADVPN UDP Gateway
+ * Created by: Defebs-vpn
+ * Created at: 2025-02-14 21:37:41
+ * Version: 1.0.0
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
+#include <time.h>
+#include <pthread.h>
+
+#define LOGGER_PREFIX "[BADVPN-UDPGW] "
+#define MAX_CLIENTS 1000
+#define BUFFER_SIZE 65536
+#define DEFAULT_PORT 7300
+#define VERSION "1.0.0"
+
+// Structure for client connection
+typedef struct {
+    int socket;
+    struct sockaddr_in addr;
+    uint32_t id;
+    time_t last_active;
+} client_t;
+
+// Global variables
+static int running = 1;
+static client_t *clients[MAX_CLIENTS];
+static int client_count = 0;
+static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int epoll_fd;
+
+// Function declarations
+void logger(const char *format, ...);
+void signal_handler(int signo);
+int create_server_socket(int port);
+void handle_new_connection(int server_socket);
+void handle_client_data(client_t *client);
+void remove_client(client_t *client);
+void cleanup_inactive_clients(void);
+void print_statistics(void);
+void usage(void);
+
+// Logger function
+void logger(const char *format, ...) {
+    time_t now;
+    struct tm *tm_info;
+    char timestamp[26];
+    va_list args;
+
+    time(&now);
+    tm_info = localtime(&now);
+    strftime(timestamp, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+
+    fprintf(stderr, "%s%s ", LOGGER_PREFIX, timestamp);
+    
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    
+    fprintf(stderr, "\n");
+}
+
+// Signal handler
+void signal_handler(int signo) {
+    if (signo == SIGINT || signo == SIGTERM) {
+        logger("Received signal %d, shutting down...", signo);
+        running = 0;
+    }
+}
+
+// Create server socket
+int create_server_socket(int port) {
+    int server_socket;
+    struct sockaddr_in server_addr;
+    int opt = 1;
+
+    server_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (server_socket < 0) {
+        logger("Failed to create socket: %s", strerror(errno));
+        exit(1);
+    }
+
+    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(port);
+
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        logger("Failed to bind socket: %s", strerror(errno));
+        exit(1);
+    }
+
+    return server_socket;
+}
+
+// Handle new connection
+void handle_new_connection(int server_socket) {
+    client_t *client;
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    ssize_t recv_len;
+
+    recv_len = recvfrom(server_socket, buffer, BUFFER_SIZE, 0,
+                        (struct sockaddr *)&client_addr, &addr_len);
+    if (recv_len < 0) {
+        logger("Failed to receive data: %s", strerror(errno));
+        return;
+    }
+
+    pthread_mutex_lock(&clients_mutex);
+
+    // Check if we've reached maximum clients
+    if (client_count >= MAX_CLIENTS) {
+        logger("Maximum number of clients reached");
+        pthread_mutex_unlock(&clients_mutex);
+        return;
+    }
+
+    // Create new client
+    client = malloc(sizeof(client_t));
+    if (!client) {
+        logger("Failed to allocate memory for client");
+        pthread_mutex_unlock(&clients_mutex);
+        return;
+    }
+
+    // Initialize client
+    client->socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (client->socket < 0) {
+        logger("Failed to create client socket: %s", strerror(errno));
+        free(client);
+        pthread_mutex_unlock(&clients_mutex);
+        return;
+    }
+
+    memcpy(&client->addr, &client_addr, sizeof(client_addr));
+    client->id = client_count + 1;
+    client->last_active = time(NULL);
+
+    // Add to clients array
+    clients[client_count++] = client;
+
+    logger("New client connected from %s:%d (ID: %d)",
+           inet_ntoa(client_addr.sin_addr),
+           ntohs(client_addr.sin_port),
+           client->id);
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    // Forward initial data
+    if (recv_len > 0) {
+        handle_client_data(client);
+    }
+}
+
+// Handle client data
+void handle_client_data(client_t *client) {
+    char buffer[BUFFER_SIZE];
+    ssize_t recv_len;
+    struct sockaddr_in target_addr;
+    socklen_t addr_len = sizeof(target_addr);
+
+    // Update last active time
+    client->last_active = time(NULL);
+
+    // Receive data from client
+    recv_len = recvfrom(client->socket, buffer, BUFFER_SIZE, 0,
+                        (struct sockaddr *)&target_addr, &addr_len);
+    if (recv_len < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            logger("Failed to receive data from client %d: %s",
+                   client->id, strerror(errno));
+            remove_client(client);
+        }
+        return;
+    }
+
+    // Forward data to target
+    if (sendto(client->socket, buffer, recv_len, 0,
+               (struct sockaddr *)&target_addr, addr_len) < 0) {
+        logger("Failed to send data to target for client %d: %s",
+               client->id, strerror(errno));
+    }
+}
+
+// Remove client
+void remove_client(client_t *client) {
+    pthread_mutex_lock(&clients_mutex);
+
+    // Find and remove client from array
+    for (int i = 0; i < client_count; i++) {
+        if (clients[i] == client) {
+            // Shift remaining clients
+            for (int j = i; j < client_count - 1; j++) {
+                clients[j] = clients[j + 1];
+            }
+            client_count--;
+            break;
+        }
+    }
+
+    logger("Client %d disconnected", client->id);
+
+    close(client->socket);
+    free(client);
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+// Cleanup inactive clients
+void cleanup_inactive_clients(void) {
+    time_t now = time(NULL);
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < client_count; i++) {
+        if (now - clients[i]->last_active > 300) { // 5 minutes timeout
+            client_t *client = clients[i];
+            // Shift remaining clients
+            for (int j = i; j < client_count - 1; j++) {
+                clients[j] = clients[j + 1];
+            }
+            client_count--;
+            i--;
+
+            logger("Removing inactive client %d", client->id);
+            close(client->socket);
+            free(client);
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+// Print statistics
+void print_statistics(void) {
+    pthread_mutex_lock(&clients_mutex);
+    
+    logger("Current statistics:");
+    logger("- Active clients: %d", client_count);
+    logger("- Maximum clients: %d", MAX_CLIENTS);
+    
+    for (int i = 0; i < client_count; i++) {
+        time_t idle_time = time(NULL) - clients[i]->last_active;
+        logger("- Client %d: %s:%d (Idle: %ld seconds)",
+               clients[i]->id,
+               inet_ntoa(clients[i]->addr.sin_addr),
+               ntohs(clients[i]->addr.sin_port),
+               idle_time);
+    }
+    
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+// Usage information
+void usage(void) {
+    printf("BadVPN UDP Gateway v%s\n", VERSION);
+    printf("Created by: Defebs-vpn\n");
+    printf("Created at: 2025-02-14 21:37:41\n\n");
+    printf("Usage: badvpn-udpgw [options]\n");
+    printf("Options:\n");
+    printf("  --listen-addr addr   Local address to listen on (default: 127.0.0.1)\n");
+    printf("  --listen-port port   Local port to listen on (default: 7300)\n");
+    printf("  --max-clients n      Maximum number of clients (default: 1000)\n");
+    printf("  --help              Show this help message\n");
+}
+
+// Main function
+int main(int argc, char *argv[]) {
+    int server_socket;
+    int port = DEFAULT_PORT;
+    struct epoll_event events[MAX_CLIENTS + 1];
+
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0) {
+            usage();
+            return 0;
+        } else if (strcmp(argv[i], "--listen-port") == 0 && i + 1 < argc) {
+            port = atoi(argv[++i]);
+        }
+    }
+
+    // Setup signal handlers
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    // Create server socket
+    server_socket = create_server_socket(port);
+    logger("Server started on port %d", port);
+
+    // Create epoll instance
+    epoll_fd = epoll_create1(0);
+    if (epoll_fd < 0) {
+        logger("Failed to create epoll instance: %s", strerror(errno));
+        return 1;
+    }
+
+    // Add server socket to epoll
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = server_socket;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket, &ev) < 0) {
+        logger("Failed to add server socket to epoll: %s", strerror(errno));
+        return 1;
+    }
+
+    // Main loop
+    while (running) {
+        int nfds = epoll_wait(epoll_fd, events, MAX_CLIENTS + 1, 1000);
+        
+        if (nfds < 0) {
+            if (errno != EINTR) {
+                logger("epoll_wait failed: %s", strerror(errno));
+                break;
+            }
+            continue;
+        }
+
+        for (int i = 0; i < nfds; i++) {
+            if (events[i].data.fd == server_socket) {
+                handle_new_connection(server_socket);
+            } else {
+                client_t *client = NULL;
+                pthread_mutex_lock(&clients_mutex);
+                for (int j = 0; j < client_count; j++) {
+                    if (clients[j]->socket == events[i].data.fd) {
+                        client = clients[j];
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&clients_mutex);
+
+                if (client) {
+                    handle_client_data(client);
+                }
+            }
+        }
+
+        // Periodic tasks
+        cleanup_inactive_clients();
+        print_statistics();
+    }
+
+    // Cleanup
+    logger("Cleaning up...");
+    close(server_socket);
+    close(epoll_fd);
+
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < client_count; i++) {
+        close(clients[i]->socket);
+        free(clients[i]);
+    }
+    pthread_mutex_unlock(&clients_mutex);
+
+    logger("Server shutdown complete");
+    return 0;
+}
