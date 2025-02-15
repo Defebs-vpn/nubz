@@ -523,9 +523,6 @@ EOF
     done
 }
 
-# Call the fix function
-fix_inactive_services
-
 echo -e "\n${YELLOW}Service recovery completed. Please check the status above.${NC}"
 echo -e "${BLUE}If any services are still inactive, please check the logs using:${NC}"
 echo -e "journalctl -u service-name"
