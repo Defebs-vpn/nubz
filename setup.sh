@@ -289,16 +289,8 @@ setup_ssl_cert() {
     # Check if certificate was obtained
     if [[ -f "/etc/letsencrypt/live/${SUB_DOMAIN}/fullchain.pem" ]]; then
         echo -e "${GREEN}SSL Certificate obtained successfully!${NC}"
-
-# Function: Setup Stunnel
-setup_stunnel() {
-    # Generate SSL Certificate
-    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
-        -subj "/C=ID/ST=Jakarta/L=Jakarta/O=${SCRIPT_CREATOR}/OU=VPN Premium/CN=${MYIP}" \
-        -keyout /etc/stunnel/stunnel.pem \
-        -out /etc/stunnel/stunnel.pem
         
-        # Update stunnel configuration
+        # Configure stunnel with Let's Encrypt certificate
         cat > /etc/stunnel/stunnel.conf << EOF
 pid = /var/run/stunnel4.pid
 cert = /etc/letsencrypt/live/${SUB_DOMAIN}/fullchain.pem
@@ -333,9 +325,6 @@ accept = 443
 connect = 127.0.0.1:$TROJAN_PORT
 EOF
         
-        # Restart stunnel
-        systemctl restart stunnel4
-        
         # Setup auto-renewal
         cat > /etc/cron.daily/cert-renewal << EOF
 #!/bin/bash
@@ -343,9 +332,53 @@ certbot renew --quiet --no-self-upgrade --pre-hook "systemctl stop nginx" --post
 EOF
         chmod +x /etc/cron.daily/cert-renewal
         
+        # Restart stunnel
+        systemctl restart stunnel4
     else
-        echo -e "${RED}Failed to obtain SSL Certificate!${NC}"
-        return 1
+        echo -e "${RED}Failed to obtain SSL Certificate! Using self-signed certificate instead.${NC}"
+        
+        # Generate self-signed certificate
+        openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+            -subj "/C=ID/ST=Jakarta/L=Jakarta/O=${SCRIPT_CREATOR}/OU=VPN Premium/CN=${SUB_DOMAIN}" \
+            -keyout /etc/stunnel/stunnel.pem \
+            -out /etc/stunnel/stunnel.pem
+            
+        # Configure stunnel with self-signed certificate
+        cat > /etc/stunnel/stunnel.conf << EOF
+pid = /var/run/stunnel4.pid
+cert = /etc/stunnel/stunnel.pem
+client = no
+socket = a:SO_REUSEADDR=1
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
+
+[dropbear]
+accept = $SSL_PORT
+connect = 127.0.0.1:143
+
+[openssh]
+accept = 777
+connect = 127.0.0.1:$SSH_PORT
+
+[openvpn]
+accept = 442
+connect = 127.0.0.1:$OVPN_PORT
+
+[vmess]
+accept = 443
+connect = 127.0.0.1:$VMESS_PORT
+
+[vless]
+accept = 443
+connect = 127.0.0.1:$VLESS_PORT
+
+[trojan]
+accept = 443
+connect = 127.0.0.1:$TROJAN_PORT
+EOF
+        
+        # Restart stunnel
+        systemctl restart stunnel4
     fi
 }
 
