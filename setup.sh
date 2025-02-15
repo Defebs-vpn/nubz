@@ -783,11 +783,11 @@ main_install() {
         exit 1
     fi
     
-    # Setup Domain and DNS
-    setup_domain || exit 1
-    
     # Initialize Installation
     init_installation
+    
+    # Setup Domain and DNS
+    setup_domain || exit 1
     
     # Setup Services
     setup_ssh
