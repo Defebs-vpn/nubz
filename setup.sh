@@ -90,21 +90,6 @@ init_installation() {
     apt upgrade -y
     apt dist-upgrade -y
     
-    # Install jq first for JSON processing
-    echo -e "${YELLOW}Installing jq...${NC}"
-    apt install -y jq || {
-        echo -e "${RED}Failed to install jq. Retrying with alternative method...${NC}"
-        apt-get update
-        apt-get install -y jq
-    }
-    
-    # Verify jq installation
-    if ! command -v jq &> /dev/null; then
-        echo -e "${RED}Failed to install jq. Installing manually...${NC}"
-        wget -O /usr/bin/jq "https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64"
-        chmod +x /usr/bin/jq
-    fi
-    
     # Install required packages
     echo -e "${YELLOW}Installing required packages...${NC}"
     apt install -y \
@@ -122,11 +107,10 @@ init_installation() {
         netfilter-persistent \
         iptables-persistent \
         net-tools \
+        jq \
         bc \
         vnstat \
-        python \
         python3 \
-        python-pip \
         python3-pip \
         nginx \
         certbot \
@@ -153,23 +137,47 @@ init_installation() {
         bash-completion \
         ntpdate \
         apache2-utils \
-        sysstat \
-        || {
-            echo -e "${RED}Failed to install some packages. Retrying...${NC}"
-            apt-get update
-            apt-get install -y curl wget git zip unzip tar build-essential cmake make gcc g++ \
-            netfilter-persistent iptables-persistent net-tools jq bc vnstat python python3 \
-            python-pip python3-pip nginx certbot python3-certbot-nginx openssh-server dropbear \
+        sysstat || {
+            echo -e "${RED}Failed to install some packages. Retrying with alternative repository...${NC}"
+            # Add universe repository
+            add-apt-repository universe -y
+            apt update
+            apt install -y curl wget git zip unzip tar build-essential cmake make gcc g++ \
+            netfilter-persistent iptables-persistent net-tools jq bc vnstat python3 \
+            python3-pip nginx certbot python3-certbot-nginx openssh-server dropbear \
             stunnel4 fail2ban ufw needrestart ca-certificates openssl cron pwgen nscd \
             libxml-parser-perl squid neofetch htop mlocate dnsutils libsqlite3-dev socat \
             bash-completion ntpdate apache2-utils sysstat
         }
         
-    # Clear package cache
+    # Clear package cache and remove unused packages
     apt clean
     apt autoremove -y
     
+    # Verify critical packages
+    local critical_packages=(nginx certbot stunnel4 dropbear)
+    local missing_packages=()
+    
+    for package in "${critical_packages[@]}"; do
+        if ! dpkg -l | grep -q "^ii  $package"; then
+            missing_packages+=("$package")
+        fi
+    done
+    
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        echo -e "${RED}Critical packages failed to install: ${missing_packages[*]}${NC}"
+        echo -e "${YELLOW}Attempting to fix installation...${NC}"
+        apt --fix-broken install -y
+        apt install -y "${missing_packages[@]}"
+    fi
+    
+    # Install Python packages
+    echo -e "${YELLOW}Installing Python packages...${NC}"
+    python3 -m pip install --upgrade pip
+    python3 -m pip install requests beautifulsoup4
+    
     echo -e "${GREEN}Initialization completed successfully!${NC}"
+    return 0
 }
 
 # Function: Configure Domain
