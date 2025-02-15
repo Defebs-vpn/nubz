@@ -20,7 +20,7 @@ NC='\033[0m'
 # Script Information
 SCRIPT_VERSION="2.3.0"
 SCRIPT_CREATED="2025-02-14 21:52:31 UTC"
-SCRIPT_CREATOR="Defebs-vpn"
+SCRIPT_CREATOR="SI KONTOL"
 
 # Default Configuration
 SSH_PORT=22
@@ -77,7 +77,6 @@ CF_ZONE_ID="5dae12d8f2f47182f90978e42b52522a"
 CF_API_TOKEN="EGVs2f1gfy7AVGE-3pXunVxhWhSyQWIkdfztY_pV"
 CF_EMAIL="dedefebriansyah402@gmail.com"
 DOMAIN="defebs-vpn.my.id"
-SUB_DOMAIN="sc.defebs-vpn.my.id"
 
 # Function: Configure Domain and DNS
 setup_domain() {
@@ -110,7 +109,7 @@ setup_domain() {
     
     # Set Global Variables
     DOMAIN="$domain_name"
-    SUB_DOMAIN="${sub_prefix}.${domain_name}"
+    SUB_DOMAIN="${sub_prefix}"
     CF_ZONE_ID="$zone_id"
     CF_API_TOKEN="$api_token"
     CF_EMAIL="$cf_email"
@@ -124,40 +123,49 @@ update_dns_record() {
     echo -e "\n${YELLOW}Updating DNS Record...${NC}"
     
     # Check if DNS record exists
-    CHECK_RECORD=$(curl -sLX GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${SUB_DOMAIN}" \
-     -H "X-Auth-Email: ${CF_EMAIL}" \
-     -H "X-Auth-Key: ${CF_API_TOKEN}" \
+    CHECK_RECORD=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${SUB_DOMAIN}" \
+     -H "Authorization: Bearer ${CF_API_TOKEN}" \
      -H "Content-Type: application/json")
     
     if [[ $(echo "$CHECK_RECORD" | grep -c "\"count\":0") -eq 1 ]]; then
         # Create new DNS record
-        CREATE_RECORD=$(curl -sLX POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-         -H "X-Auth-Email: ${CF_EMAIL}" \
-         -H "X-Auth-Key: ${CF_API_TOKEN}" \
+        CREATE_RECORD=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+         -H "Authorization: Bearer ${CF_API_TOKEN}" \
          -H "Content-Type: application/json" \
-         --data '{"type":"A","name":"'${SUB_DOMAIN}'","content":"'${MYIP}'","ttl":120,"proxied":false}')
+         --data '{
+           "type": "A",
+           "name": "'${SUB_DOMAIN}'",
+           "content": "'${MYIP}'",
+           "ttl": 120,
+           "proxied": false
+         }')
         
         if [[ $(echo "$CREATE_RECORD" | grep -c "\"success\":true") -eq 1 ]]; then
             echo -e "${GREEN}Successfully created DNS record for ${SUB_DOMAIN}${NC}"
         else
-            echo -e "${RED}Failed to create DNS record!${NC}"
+            echo -e "${RED}Failed to create DNS record! Error: $(echo "$CREATE_RECORD" | jq -r '.errors[0].message')${NC}"
             return 1
         fi
     else
         # Get existing record ID
-        RECORD_ID=$(echo "$CHECK_RECORD" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+        RECORD_ID=$(echo "$CHECK_RECORD" | jq -r '.result[0].id')
         
         # Update existing DNS record
-        UPDATE_RECORD=$(curl -sLX PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-         -H "X-Auth-Email: ${CF_EMAIL}" \
-         -H "X-Auth-Key: ${CF_API_TOKEN}" \
+        UPDATE_RECORD=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+         -H "Authorization: Bearer ${CF_API_TOKEN}" \
          -H "Content-Type: application/json" \
-         --data '{"type":"A","name":"'${SUB_DOMAIN}'","content":"'${MYIP}'","ttl":120,"proxied":false}')
+         --data '{
+           "type": "A",
+           "name": "'${SUB_DOMAIN}'",
+           "content": "'${MYIP}'",
+           "ttl": 120,
+           "proxied": false
+         }')
         
         if [[ $(echo "$UPDATE_RECORD" | grep -c "\"success\":true") -eq 1 ]]; then
             echo -e "${GREEN}Successfully updated DNS record for ${SUB_DOMAIN}${NC}"
         else
-            echo -e "${RED}Failed to update DNS record!${NC}"
+            echo -e "${RED}Failed to update DNS record! Error: $(echo "$UPDATE_RECORD" | jq -r '.errors[0].message')${NC}"
             return 1
         fi
     fi
